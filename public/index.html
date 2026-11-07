@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DailyNest | Your Daily Life Planner</title>
+  <meta name="description" content="A responsive daily life planner for home, study, health and shopping tasks. Built with semantic HTML5, CSS Grid, Flexbox and vanilla JavaScript." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700&family=Open+Sans:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <div class="page">
+    <header class="site-header">
+      <div class="brand">
+        <svg class="brand-icon" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true">
+          <rect x="2" y="2" width="28" height="28" rx="9" fill="#5c4033" />
+          <path d="M9 17l5 5 9-11" fill="none" stroke="#a0d4e0" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span class="brand-name">DailyNest</span>
+      </div>
+
+      <button class="nav-toggle" id="navToggle" aria-expanded="false" aria-controls="siteNav">
+        <span class="visually-hidden">Toggle navigation menu</span>
+        <span aria-hidden="true">☰</span>
+      </button>
+
+      <nav id="siteNav" class="site-nav" aria-label="Main navigation">
+        <ul class="nav-list">
+          <li><a href="#overview">Today</a></li>
+          <li><a href="#tasks">My Tasks</a></li>
+          <li><a href="#habits">Daily Habits</a></li>
+          <li><a href="#contact">Contact</a></li>
+        </ul>
+        <button class="btn btn-ghost" id="themeToggle" aria-pressed="false">Dark mode</button>
+      </nav>
+    </header>
+
+    <aside class="sidebar" aria-label="Your progress today">
+      <h2>Today</h2>
+      <p id="todayDate" class="date"></p>
+      <p id="progressText" aria-live="polite">0 of 0 tasks done</p>
+      <div class="progress" role="progressbar" aria-label="Tasks completed" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressBar">
+        <div class="progress-fill" id="progressFill"></div>
+      </div>
+      <button class="btn btn-ghost" id="clearDoneBtn">Clear finished tasks</button>
+    </aside>
+
+    <main id="main" class="main">
+      <section id="overview" class="hero" aria-labelledby="hero-title">
+        <h1 id="hero-title">Plan Your Day, One Small Task at a Time</h1>
+        <p>Keep home chores, study time, healthy habits and shopping in one calm place that works on your phone, tablet and computer.</p>
+        <a class="btn" href="#tasks">Start planning</a>
+      </section>
+
+      <section id="tasks" aria-labelledby="tasks-title">
+        <h2 id="tasks-title">My Tasks</h2>
+
+        <form id="taskForm" class="task-form" novalidate>
+          <div class="field">
+            <label for="taskInput">New task</label>
+            <input type="text" id="taskInput" name="task" placeholder="e.g. Buy milk and eggs" maxlength="80" required />
+          </div>
+          <div class="field">
+            <label for="taskCategory">Category</label>
+            <select id="taskCategory" name="category">
+              <option value="home">Home</option>
+              <option value="study">Study</option>
+              <option value="health">Health</option>
+              <option value="shopping">Shopping</option>
+            </select>
+          </div>
+          <button type="submit" class="btn">Add task</button>
+        </form>
+        <p id="formMsg" class="form-msg" role="alert"></p>
+
+        <div class="filters" role="group" aria-label="Filter tasks by category">
+          <button class="chip is-active" data-filter="all" aria-pressed="true">All</button>
+          <button class="chip" data-filter="home" aria-pressed="false">Home</button>
+          <button class="chip" data-filter="study" aria-pressed="false">Study</button>
+          <button class="chip" data-filter="health" aria-pressed="false">Health</button>
+          <button class="chip" data-filter="shopping" aria-pressed="false">Shopping</button>
+        </div>
+
+        <div class="grid" id="taskGrid">
+          <!-- Task cards are rendered by script.js from the data the API sends -->
+        </div>
+        <p id="emptyMsg" class="empty" hidden>No tasks here yet. Add your first one above!</p>
+      </section>
+
+      <section id="habits" aria-labelledby="habits-title">
+        <h2 id="habits-title">Daily Habits That Help</h2>
+        <div class="grid">
+          <article class="card">
+            <h3>Start Small</h3>
+            <p>Pick three important tasks each morning. Finishing a few beats planning too many.</p>
+          </article>
+          <article class="card">
+            <h3>Stay Hydrated</h3>
+            <p>Add a health task like "Drink 8 glasses of water" and tick it off through the day.</p>
+          </article>
+          <article class="card">
+            <h3>Review at Night</h3>
+            <p>Spend two minutes checking what you finished, then clear it and plan tomorrow.</p>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer id="contact" class="site-footer">
+      <p>&copy; 2026 DailyNest &middot; Project 3 &middot; Database Integration &middot; DecodeLabs Internship Program</p>
+      <p><a href="#main">Back to top</a></p>
+    </footer>
+  </div>
+
+  <script src="script.js" defer></script>
+</body>
+</html>

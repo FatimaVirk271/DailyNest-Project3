@@ -1,0 +1,17 @@
+{
+  "name": "dailynest-project3-database",
+  "version": "1.0.0",
+  "description": "DailyNest - DecodeLabs Project 3: Database Integration (Node.js + Express + SQLite)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js",
+    "migrate": "node scripts/migrate-json.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

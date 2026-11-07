@@ -1,7 +1,8 @@
 // server.js - the entry point. It wires everything together.
 const express = require('express');
 const path = require('path');
-const { db } = require('./db');             // opening the database happens here (db.js runs once)
+const db = require('./db');                  // chooses the database (cloud PostgreSQL or local SQLite file)
+const store = require('./store');
 const tasksRouter = require('./routes/tasks');
 const statsRouter = require('./routes/stats');
 const categoriesRouter = require('./routes/categories');
@@ -9,6 +10,7 @@ const adminRouter = require('./routes/admin');
 const {
   requestLogger,
   rateLimiter,
+  asyncHandler,
   notFound,
   errorHandler,
 } = require('./middleware');
@@ -24,20 +26,26 @@ app.use(requestLogger);                   // log every request
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Health check - also proves the database answers (not rate limited)
-app.get('/api/health', (req, res) => {
+app.get('/api/health', asyncHandler(async (req, res) => {
   try {
-    db.prepare('SELECT 1').get();
+    await db.query('SELECT 1');
     res.status(200).json({
       success: true,
-      data: { status: 'ok', database: 'connected', uptimeSeconds: Math.round(process.uptime()) },
+      data: {
+        status: 'ok',
+        database: 'connected',
+        type: db.isPostgres ? 'postgresql' : 'sqlite',
+        uptimeSeconds: Math.round(process.uptime()),
+      },
     });
   } catch (err) {
+    console.error('Health check failed:', err.message);
     res.status(503).json({
       success: false,
       error: { code: 'DATABASE_UNAVAILABLE', message: 'The database is not reachable' },
     });
   }
-});
+}));
 
 app.use('/api', rateLimiter);                 // 429 if someone spams the API
 app.use('/api/tasks', tasksRouter);           // GET / POST / PUT / PATCH / DELETE
@@ -50,19 +58,28 @@ app.use(errorHandler); // any error -> clean JSON (400 / 413 / 500)
 
 // Only start listening when run directly (so tests can import the app)
 if (require.main === module) {
-  const server = app.listen(PORT, () => {
-    console.log(`DailyNest running on http://localhost:${PORT}`);
-  });
+  store.init()                                // connect to the database FIRST, then accept visitors
+    .then(() => {
+      const server = app.listen(PORT, () => {
+        console.log(`DailyNest running on http://localhost:${PORT}`);
+        console.log(`Database: ${db.describe()}`);
+      });
 
-  // Ctrl+C: stop taking requests, then close the database cleanly
-  const shutdown = () => {
-    server.close(() => {
-      db.close();
-      process.exit(0);
+      // Ctrl+C: stop taking requests, then close the database cleanly
+      const shutdown = () => {
+        server.close(async () => {
+          await db.close();
+          process.exit(0);
+        });
+      };
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+    })
+    .catch((err) => {
+      console.error('Could not start: the database connection failed.');
+      console.error(err.message);
+      process.exit(1);
     });
-  };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
 }
 
 module.exports = app;

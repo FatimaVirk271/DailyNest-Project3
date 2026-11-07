@@ -4,7 +4,7 @@
 const express = require('express');
 const store = require('../store');
 const { validateTask, CATEGORIES } = require('../validators');
-const { sendError, requireJson } = require('../middleware');
+const { sendError, requireJson, asyncHandler } = require('../middleware');
 
 const router = express.Router();
 
@@ -21,7 +21,7 @@ function parseId(req, res, next) {
 // GET /api/tasks
 //   optional filters: ?category=study  ?done=true  ?search=milk  ?page=1  ?limit=100
 // ---------------------------------------------------------------
-router.get('/', (req, res) => {
+router.get('/', asyncHandler(async (req, res) => {
   const { category, done, search } = req.query;
   const page = req.query.page === undefined ? 1 : Number(req.query.page);
   const limit = req.query.limit === undefined ? 100 : Number(req.query.limit);
@@ -40,7 +40,7 @@ router.get('/', (req, res) => {
   }
 
   // The database does the filtering and paging (WHERE ... LIMIT ... OFFSET) - not JavaScript.
-  const { tasks, total } = store.list({
+  const { tasks, total } = await store.list({
     category,
     done: done === undefined ? undefined : done === 'true',
     search: typeof search === 'string' ? search.trim() : '',
@@ -53,81 +53,81 @@ router.get('/', (req, res) => {
     data: tasks,
     meta: { page, limit, total, totalPages: Math.ceil(total / limit) || 1 },
   });
-});
+}));
 
 // ---------------------------------------------------------------
 // GET /api/tasks/:id    -> one task
 // ---------------------------------------------------------------
-router.get('/:id', parseId, (req, res) => {
-  const task = store.find(req.taskId);
+router.get('/:id', parseId, asyncHandler(async (req, res) => {
+  const task = await store.find(req.taskId);
   if (!task) {
     return sendError(res, 404, 'NOT_FOUND', `Task ${req.taskId} not found`);
   }
   res.status(200).json({ success: true, data: task });
-});
+}));
 
 // ---------------------------------------------------------------
 // POST /api/tasks       -> create a task  { "text": "...", "category": "home" }
 // ---------------------------------------------------------------
-router.post('/', requireJson, (req, res) => {
+router.post('/', requireJson, asyncHandler(async (req, res) => {
   const { errors, clean } = validateTask(req.body);
   if (errors.length) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid task data', errors);
   }
-  const task = store.create(clean);
+  const task = await store.create(clean);
   res.status(201).location(`/api/tasks/${task.id}`).json({ success: true, data: task });
-});
+}));
 
 // ---------------------------------------------------------------
 // PUT /api/tasks/:id    -> REPLACE a task (send text, category, done)
 // ---------------------------------------------------------------
-router.put('/:id', parseId, requireJson, (req, res) => {
-  if (!store.find(req.taskId)) {
+router.put('/:id', parseId, requireJson, asyncHandler(async (req, res) => {
+  if (!(await store.find(req.taskId))) {
     return sendError(res, 404, 'NOT_FOUND', `Task ${req.taskId} not found`);
   }
   const { errors, clean } = validateTask(req.body);
   if (errors.length) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid task data', errors);
   }
-  const task = store.update(req.taskId, clean);
+  const task = await store.update(req.taskId, clean);
   res.status(200).json({ success: true, data: task });
-});
+}));
 
 // ---------------------------------------------------------------
 // PATCH /api/tasks/:id  -> change SOME fields, e.g. { "done": true }
 // (this is what the "Mark done" button uses)
 // ---------------------------------------------------------------
-router.patch('/:id', parseId, requireJson, (req, res) => {
-  if (!store.find(req.taskId)) {
+router.patch('/:id', parseId, requireJson, asyncHandler(async (req, res) => {
+  if (!(await store.find(req.taskId))) {
     return sendError(res, 404, 'NOT_FOUND', `Task ${req.taskId} not found`);
   }
   const { errors, clean } = validateTask(req.body, { partial: true });
   if (errors.length) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid task data', errors);
   }
-  const task = store.update(req.taskId, clean);
+  const task = await store.update(req.taskId, clean);
   res.status(200).json({ success: true, data: task });
-});
+}));
 
 // ---------------------------------------------------------------
 // DELETE /api/tasks/:id -> remove one task
 // ---------------------------------------------------------------
-router.delete('/:id', parseId, (req, res) => {
-  if (!store.remove(req.taskId)) {
+router.delete('/:id', parseId, asyncHandler(async (req, res) => {
+  if (!(await store.remove(req.taskId))) {
     return sendError(res, 404, 'NOT_FOUND', `Task ${req.taskId} not found`);
   }
   res.status(204).end(); // 204 = success, nothing to send back
-});
+}));
 
 // ---------------------------------------------------------------
 // DELETE /api/tasks?done=true -> "Clear finished tasks" button
 // ---------------------------------------------------------------
-router.delete('/', (req, res) => {
+router.delete('/', asyncHandler(async (req, res) => {
   if (req.query.done !== 'true') {
     return sendError(res, 400, 'INVALID_QUERY', 'Only finished tasks can be cleared: use DELETE /api/tasks?done=true');
   }
-  const deleted = store.removeDone();
+  const deleted = await store.removeDone();
   res.status(200).json({ success: true, data: { deleted } });
-});
+}));
 
 module.exports = router;

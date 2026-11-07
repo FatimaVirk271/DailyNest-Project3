@@ -13,9 +13,12 @@ process.env.SILENT = '1';
 process.env.RATE_LIMIT_MAX = '100';
 process.env.API_KEY = 'test-key';
 process.env.NODE_NO_WARNINGS = '1';
+process.env.DATABASE_URL = ''; // tests must NEVER touch the real cloud database
 
 const app = require('./server');
-const { db, open } = require('./db');
+const db = require('./db');
+const store = require('./store');
+const { DatabaseSync } = require('node:sqlite'); // used only to peek into the test database file
 
 let passed = 0;
 let failed = 0;
@@ -23,8 +26,9 @@ function check(name, condition, extra = '') {
   if (condition) { passed++; console.log(`  PASS  ${name}`); }
   else { failed++; console.log(`  FAIL  ${name} ${extra}`); }
 }
-function throwsWith(fn, pattern) {
-  try { fn(); return false; } catch (err) { return pattern.test(String(err.message)); }
+// true if the (async) database call fails with a message matching the pattern
+async function rejectsWith(sql, pattern, params = []) {
+  try { await db.query(sql, params); return false; } catch (err) { return pattern.test(String(err.message)); }
 }
 
 // Starts a REAL second server process (to prove data survives a restart)
@@ -43,7 +47,10 @@ function startServer(file, port) {
 }
 const stopServer = (child) => new Promise((resolve) => { child.once('exit', resolve); child.kill('SIGINT'); });
 
-const server = app.listen(0, async () => {
+let server;
+store.init().then(() => {
+if (db.isPostgres) { console.log('Refusing to run the tests on a real database.'); process.exit(1); }
+server = app.listen(0, async () => {
   const base = `http://127.0.0.1:${server.address().port}`;
   const json = { 'Content-Type': 'application/json' };
   const call = async (method, url, body, headers = json, root = base) => {
@@ -66,9 +73,9 @@ const server = app.listen(0, async () => {
     check('GET /script.js is served', js.status === 200);
 
     console.log('Database schema');
-    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('tasks','categories')").all();
-    check('both tables exist (tasks, categories)', tables.length === 2);
-    check('foreign keys are switched on', db.prepare('PRAGMA foreign_keys').get().foreign_keys === 1);
+    const tables = await db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('tasks','categories')");
+    check('both tables exist (tasks, categories)', tables.rows.length === 2);
+    check('foreign keys are switched on', (await db.query('PRAGMA foreign_keys')).rows[0].foreign_keys === 1);
     r = await call('GET', '/api/categories');
     check('GET /api/categories -> the 4 categories with task counts',
       r.status === 200 && r.body.data.length === 4 && r.body.data.every((c) => c.total === 1), JSON.stringify(r.body));
@@ -177,7 +184,7 @@ const server = app.listen(0, async () => {
     r = await call('DELETE', `/api/tasks/${planId}`, undefined, {});
     check('delete it again -> 404', r.status === 404);
     check('the row is really gone from the table',
-      db.prepare('SELECT COUNT(*) AS n FROM tasks WHERE id = ?').get(planId).n === 0);
+      (await db.query('SELECT COUNT(*) AS n FROM tasks WHERE id = $1', [planId])).rows[0].n === 0);
     r = await call('DELETE', '/api/tasks/abc', undefined, {});
     check('delete bad id -> 400', r.status === 400);
     r = await call('DELETE', '/api/tasks?done=true', undefined, {});
@@ -205,21 +212,30 @@ const server = app.listen(0, async () => {
     await call('DELETE', `/api/tasks/${evilId}`, undefined, {});
 
     console.log('Database rules (even if the app code is bypassed)');
-    const direct = (sql) => () => db.prepare(sql).run();
     check('empty text is refused by CHECK',
-      throwsWith(direct("INSERT INTO tasks (text, category_id) VALUES ('   ', 1)"), /CHECK/));
+      await rejectsWith("INSERT INTO tasks (text, category_id) VALUES ('   ', 1)", /CHECK/));
     check('text over 80 chars is refused by CHECK',
-      throwsWith(direct(`INSERT INTO tasks (text, category_id) VALUES ('${'a'.repeat(81)}', 1)`), /CHECK/));
+      await rejectsWith('INSERT INTO tasks (text, category_id) VALUES ($1, 1)', /CHECK/, ['a'.repeat(81)]));
     check('done must be 0 or 1 (CHECK)',
-      throwsWith(direct("INSERT INTO tasks (text, category_id, done) VALUES ('ok', 1, 2)"), /CHECK/));
+      await rejectsWith("INSERT INTO tasks (text, category_id, done) VALUES ('ok', 1, 2)", /CHECK/));
     check('missing category is refused (NOT NULL)',
-      throwsWith(direct("INSERT INTO tasks (text, category_id) VALUES ('ok', NULL)"), /NOT NULL/));
+      await rejectsWith("INSERT INTO tasks (text, category_id) VALUES ('ok', NULL)", /NOT NULL/));
     check('unknown category id is refused (FOREIGN KEY)',
-      throwsWith(direct("INSERT INTO tasks (text, category_id) VALUES ('ok', 999)"), /FOREIGN KEY/));
+      await rejectsWith("INSERT INTO tasks (text, category_id) VALUES ('ok', 999)", /FOREIGN KEY/));
     check('duplicate category name is refused (UNIQUE)',
-      throwsWith(direct("INSERT INTO categories (name) VALUES ('home')"), /UNIQUE/));
+      await rejectsWith("INSERT INTO categories (name) VALUES ('home')", /UNIQUE/));
     check('a category that still has tasks cannot be deleted (RESTRICT)',
-      throwsWith(direct("DELETE FROM categories WHERE name = 'home'"), /FOREIGN KEY/));
+      await rejectsWith("DELETE FROM categories WHERE name = 'home'", /FOREIGN KEY/));
+    check('a failed step undoes the whole transaction (all or nothing)', await (async () => {
+      const before = (await db.query('SELECT COUNT(*) AS n FROM tasks')).rows[0].n;
+      try {
+        await db.transaction(async (q) => {
+          await q("INSERT INTO tasks (text, category_id) VALUES ('half done', 1)");
+          await q("INSERT INTO tasks (text, category_id) VALUES ('', 1)"); // fails -> everything is undone
+        });
+      } catch (err) { /* expected */ }
+      return (await db.query('SELECT COUNT(*) AS n FROM tasks')).rows[0].n === before;
+    })());
 
     console.log('POST /api/admin/reset (API key)');
     r = await call('POST', '/api/admin/reset', undefined, {});
@@ -228,7 +244,7 @@ const server = app.listen(0, async () => {
     check('wrong API key -> 403', r.status === 403);
     await call('POST', '/api/tasks', { text: 'Temporary task' });
     r = await call('POST', '/api/admin/reset', undefined, { 'x-api-key': 'test-key' });
-    check('correct key -> 200', r.status === 200);
+    check('correct key -> 200 and says how many tasks were added', r.status === 200 && r.body.data.tasks === 4);
     r = await call('GET', '/api/tasks');
     check('starter tasks are back', r.body.meta.total === 4 && r.body.data[0].text === 'Drink 8 glasses of water');
     check('ids start again from 1 after reset', Math.min(...r.body.data.map((t) => t.id)) === 1);
@@ -239,7 +255,7 @@ const server = app.listen(0, async () => {
 
     console.log('Persistence (data longevity)');
     await call('POST', '/api/tasks', { text: 'Survive a restart' });
-    const second = open(process.env.DB_FILE); // a brand-new connection reading the file on disk
+    const second = new DatabaseSync(process.env.DB_FILE); // a brand-new connection reading the file on disk
     check('a new connection to the file sees the saved task',
       second.prepare("SELECT COUNT(*) AS n FROM tasks WHERE text = 'Survive a restart'").get().n === 1);
     second.close();
@@ -285,12 +301,44 @@ const server = app.listen(0, async () => {
     });
     check('migration runs and reports 2 imported, 1 skipped',
       run.code === 0 && /Imported 2 task\(s\), skipped 1/.test(run.out), run.out);
-    const mig = open(migDb);
+    const mig = new DatabaseSync(migDb);
     const rows = mig.prepare('SELECT t.id, t.text, t.done, t.created_at FROM tasks t ORDER BY t.id').all();
     check('oldest task gets the smallest id, newest stays on top', rows.length === 2
       && rows[0].text === 'Oldest task' && rows[1].text === 'Newest task');
     check('done flag and original date are kept', rows[1].done === 1 && rows[0].created_at === '2026-10-01T10:00:00.000Z');
     mig.close();
+
+    console.log('Old local database (Project 3 first version) is not wiped');
+    const oldFile = path.join(tmp, 'old.db');
+    const old = new DatabaseSync(oldFile);
+    old.exec(fs.readFileSync(path.join(__dirname, 'schema.sqlite.sql'), 'utf8').replace(/CREATE TABLE IF NOT EXISTS app_meta[\s\S]*?\);/, ''));
+    old.exec("INSERT INTO categories (name) VALUES ('home'), ('study'), ('health'), ('shopping')");
+    old.exec("INSERT INTO tasks (text, category_id) VALUES ('my old task one', 1), ('my old task two', 2)");
+    old.exec('PRAGMA user_version = 1');
+    old.close();
+    const upgraded = await new Promise((resolve) => {
+      let out = '';
+      const p = spawn(process.execPath, ['-e',
+        "const s=require('./store');s.init().then(()=>s.list()).then(r=>{console.log('TOTAL='+r.total);process.exit(0)})"], {
+        cwd: __dirname, env: { ...process.env, DB_FILE: oldFile },
+      });
+      p.stdout.on('data', (d) => { out += d; });
+      p.on('exit', () => resolve(out));
+    });
+    check('existing tasks stay (2 tasks, starter tasks not forced in)', /TOTAL=2/.test(upgraded), upgraded);
+
+    console.log('Database failure does not crash the app');
+    await db.query('ALTER TABLE tasks RENAME TO tasks_hidden');
+    const realError = console.error;
+    console.error = () => {}; // hide the expected error message
+    r = await call('GET', '/api/tasks');
+    check('broken database -> clean 500 JSON (no secrets leaked)',
+      r.status === 500 && r.body.error.code === 'INTERNAL_ERROR' && !JSON.stringify(r.body).includes('tasks_hidden'));
+    r = await call('GET', '/api/health');
+    console.error = realError;
+    await db.query('ALTER TABLE tasks_hidden RENAME TO tasks');
+    r = await call('GET', '/api/tasks');
+    check('app works again once the database is fixed', r.status === 200);
 
     console.log('Rate limit');
     let got429 = false;
@@ -307,7 +355,8 @@ const server = app.listen(0, async () => {
 
   console.log(`\n${passed} passed, ${failed} failed`);
   server.close();
-  db.close();
+  await db.close();
   fs.rmSync(tmp, { recursive: true, force: true });
   process.exit(failed ? 1 : 0);
+});
 });

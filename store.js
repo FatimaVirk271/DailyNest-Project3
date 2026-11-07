@@ -1,11 +1,11 @@
-// store.js - the "Data Persistence Layer".
-// Project 2 kept tasks in memory + data.json. Project 3 keeps them in a real SQL database.
-// Notice: the function names (all / find / create / update / remove ...) stay almost the same,
-// so the routes barely change. Only what happens INSIDE each function is new: SQL.
+// store.js - the "Data Persistence Layer": all SQL lives here.
+// The routes call these functions; they never write SQL themselves.
 //
-// SAFETY RULE (Pillar 4): every value from the user goes in through a "?" placeholder.
+// SAFETY RULE (Pillar 4): every value from the user goes in through a placeholder ($1, $2 ...).
 // We NEVER glue user text into the SQL string, so SQL injection is impossible.
-const { db } = require('./db');
+//
+// Every function is "async": talking to a database takes time, so we `await` the answer.
+const db = require('./db');
 
 // The same four starter tasks DailyNest always had
 const STARTER = [
@@ -20,88 +20,87 @@ const SELECT_TASK = `
   SELECT t.id, t.text, c.name AS category, t.done, t.created_at, t.updated_at
   FROM tasks t JOIN categories c ON c.id = t.category_id`;
 
-// The database stores done as 0/1 and snake_case names; the API keeps the Project 2 shape.
+const INSERT_TASK =
+  'INSERT INTO tasks (text, category_id, done) VALUES ($1, (SELECT id FROM categories WHERE name = $2), $3) RETURNING id';
+
+const SET_FLAG =
+  "INSERT INTO app_meta (key, value) VALUES ('starter_seeded', '1') ON CONFLICT (key) DO UPDATE SET value = excluded.value";
+
+const toIso = (value) => (value === null || value === undefined ? null : new Date(value).toISOString());
+
+// The database uses snake_case names; the API keeps the Project 2 shape.
 function toTask(row) {
   if (!row) return null;
   return {
     id: row.id,
     text: row.text,
     category: row.category,
-    done: row.done === 1,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    done: Boolean(row.done),
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
   };
 }
 
-// A transaction = "all or nothing". If anything fails in the middle, everything is undone.
-function transaction(fn) {
-  db.exec('BEGIN');
-  try {
-    const result = fn();
-    db.exec('COMMIT');
-    return result;
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+async function find(id) {
+  const result = await db.query(`${SELECT_TASK} WHERE t.id = $1`, [id]);
+  return toTask(result.rows[0]);
 }
 
-// Prepared statements: the SQL is compiled once, the "?" values are filled in on each call.
-const stmt = {
-  find: db.prepare(`${SELECT_TASK} WHERE t.id = ?`),
-  insert: db.prepare(
-    'INSERT INTO tasks (text, category_id, done) VALUES (?, (SELECT id FROM categories WHERE name = ?), ?)'
-  ),
-  remove: db.prepare('DELETE FROM tasks WHERE id = ?'),
-  removeDone: db.prepare('DELETE FROM tasks WHERE done = 1'),
-  clear: db.prepare('DELETE FROM tasks'),
-  resetIds: db.prepare("DELETE FROM sqlite_sequence WHERE name = 'tasks'"),
-  totals: db.prepare('SELECT COUNT(*) AS total, COALESCE(SUM(done), 0) AS done FROM tasks'),
-  perCategory: db.prepare(`
-    SELECT c.name, COUNT(t.id) AS total, COALESCE(SUM(t.done), 0) AS done
-    FROM categories c LEFT JOIN tasks t ON t.category_id = c.id
-    GROUP BY c.id ORDER BY c.id`),
-};
-
-function find(id) {
-  return toTask(stmt.find.get(id));
-}
-
-// Back to the four starter tasks. Inserted in reverse so "Drink 8 glasses of water" stays on top
+// Back to the four starter tasks. A transaction makes it "all or nothing".
+// Inserted in reverse so "Drink 8 glasses of water" stays on top
 // (the newest task = highest id = first in the list, just like Project 1 and 2).
-function reset() {
-  return transaction(() => {
-    stmt.clear.run();
-    stmt.resetIds.run(); // ids start again from 1
-    [...STARTER].reverse().forEach((t) => stmt.insert.run(t.text, t.category, 0));
-    db.exec('PRAGMA user_version = 1'); // remember: the starter tasks were already added once
+async function reset() {
+  return db.transaction(async (q) => {
+    if (db.isPostgres) {
+      await q('TRUNCATE tasks RESTART IDENTITY'); // empty the table and start ids from 1 again
+    } else {
+      await q('DELETE FROM tasks');
+      await q("DELETE FROM sqlite_sequence WHERE name = 'tasks'");
+    }
+    for (const t of [...STARTER].reverse()) await q(INSERT_TASK, [t.text, t.category, false]);
+    await q(SET_FLAG);
     return STARTER.length;
   });
 }
 
 // First run only: a brand-new database gets the starter tasks.
 // (If you later delete every task and restart, the list stays empty - your data is respected.)
-if (db.prepare('PRAGMA user_version').get().user_version === 0) reset();
+async function seedIfNew() {
+  const flag = await db.query("SELECT value FROM app_meta WHERE key = 'starter_seeded'");
+  if (flag.rows.length > 0) return;
+  const count = await db.query('SELECT CAST(COUNT(*) AS INTEGER) AS n FROM tasks');
+  if (count.rows[0].n > 0) await db.query(SET_FLAG); // database already has tasks: just remember that
+  else await reset();
+}
+
+let ready = null;
 
 module.exports = {
-  // READ: list with filters + pagination. Filtering now happens INSIDE the database (WHERE ... LIMIT).
-  list({ category, done, search, limit = 100, offset = 0 } = {}) {
+  // Opens the database, builds the tables, adds starter tasks if it is brand new.
+  init: () => (ready = ready || db.init().then(seedIfNew)),
+
+  // READ: list with filters + pagination. Filtering happens INSIDE the database (WHERE ... LIMIT).
+  async list({ category, done, search, limit = 100, offset = 0 } = {}) {
     const where = [];
     const params = [];
-    if (category) { where.push('c.name = ?'); params.push(category); }
-    if (done !== undefined) { where.push('t.done = ?'); params.push(done ? 1 : 0); }
+    const add = (value) => { params.push(value); return `$${params.length}`; }; // returns "$1", "$2", ...
+
+    if (category) where.push(`c.name = ${add(category)}`);
+    if (done !== undefined) where.push(`t.done = ${add(done)}`);
     if (search) {
-      where.push("t.text LIKE ? ESCAPE '\\'"); // LIKE = "contains"; escape % and _ typed by the user
-      params.push(`%${search.replace(/[\\%_]/g, '\\$&')}%`);
+      // LIKE = "contains". Escape % and _ typed by the user so they count as plain characters.
+      where.push(`lower(t.text) LIKE ${add(`%${search.replace(/[\\%_]/g, '\\$&').toLowerCase()}%`)} ESCAPE '\\'`);
     }
     const clause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
 
-    const total = db
-      .prepare(`SELECT COUNT(*) AS n FROM tasks t JOIN categories c ON c.id = t.category_id${clause}`)
-      .get(...params).n;
-    const rows = db
-      .prepare(`${SELECT_TASK}${clause} ORDER BY t.id DESC LIMIT ? OFFSET ?`)
-      .all(...params, limit, offset);
+    const total = (
+      await db.query(`SELECT CAST(COUNT(*) AS INTEGER) AS n FROM tasks t JOIN categories c ON c.id = t.category_id${clause}`, params)
+    ).rows[0].n;
+
+    const n = params.length;
+    const rows = (
+      await db.query(`${SELECT_TASK}${clause} ORDER BY t.id DESC LIMIT $${n + 1} OFFSET $${n + 2}`, [...params, limit, offset])
+    ).rows;
 
     return { tasks: rows.map(toTask), total };
   },
@@ -109,56 +108,63 @@ module.exports = {
   find,
 
   // CREATE (POST -> INSERT)
-  create(data) {
-    const info = stmt.insert.run(data.text, data.category, data.done ? 1 : 0);
-    return find(Number(info.lastInsertRowid));
+  async create(data) {
+    const result = await db.query(INSERT_TASK, [data.text, data.category, Boolean(data.done)]);
+    return find(result.rows[0].id);
   },
 
   // UPDATE (PUT / PATCH -> UPDATE). Only the fields present in `data` are changed.
-  // The SQL fragments below are fixed text written by us; the values still use "?".
-  update(id, data) {
+  // The SQL pieces below are fixed text written by us; the values still use placeholders.
+  async update(id, data) {
     const sets = [];
     const params = [];
-    if ('text' in data) { sets.push('text = ?'); params.push(data.text); }
-    if ('category' in data) {
-      sets.push('category_id = (SELECT id FROM categories WHERE name = ?)');
-      params.push(data.category);
-    }
-    if ('done' in data) { sets.push('done = ?'); params.push(data.done ? 1 : 0); }
-    sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')");
+    const add = (value) => { params.push(value); return `$${params.length}`; };
 
-    const info = db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...params, id);
-    return info.changes === 0 ? null : find(id);
+    if ('text' in data) sets.push(`text = ${add(data.text)}`);
+    if ('category' in data) sets.push(`category_id = (SELECT id FROM categories WHERE name = ${add(data.category)})`);
+    if ('done' in data) sets.push(`done = ${add(Boolean(data.done))}`);
+    sets.push(`updated_at = ${db.NOW}`);
+
+    const result = await db.query(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ${add(id)} RETURNING id`, params);
+    return result.rowCount === 0 ? null : find(id);
   },
 
   // DELETE one task. Returns true if a row was really deleted.
-  remove(id) {
-    return stmt.remove.run(id).changes > 0;
+  async remove(id) {
+    return (await db.query('DELETE FROM tasks WHERE id = $1', [id])).rowCount > 0;
   },
 
   // DELETE all finished tasks. Returns how many were removed.
-  removeDone() {
-    return Number(stmt.removeDone.run().changes);
+  async removeDone() {
+    return (await db.query('DELETE FROM tasks WHERE done = $1', [true])).rowCount;
   },
 
   reset,
 
   // Progress numbers worked out by the database itself (COUNT / SUM / GROUP BY).
-  stats() {
-    const { total, done } = stmt.totals.get();
+  async stats() {
+    const totals = (
+      await db.query('SELECT CAST(COUNT(*) AS INTEGER) AS total, CAST(COALESCE(SUM(CAST(done AS INTEGER)), 0) AS INTEGER) AS done FROM tasks')
+    ).rows[0];
     const byCategory = {};
-    stmt.perCategory.all().forEach((r) => { byCategory[r.name] = { total: r.total, done: r.done }; });
+    (await this.categories()).forEach((c) => { byCategory[c.name] = { total: c.total, done: c.done }; });
     return {
-      total,
-      done,
-      remaining: total - done,
-      percent: total === 0 ? 0 : Math.round((done / total) * 100),
+      total: totals.total,
+      done: totals.done,
+      remaining: totals.total - totals.done,
+      percent: totals.total === 0 ? 0 : Math.round((totals.done / totals.total) * 100),
       byCategory,
     };
   },
 
   // The categories table with how many tasks each one has (a one-to-many relationship in action).
-  categories() {
-    return stmt.perCategory.all().map((r) => ({ name: r.name, total: r.total, done: r.done }));
+  async categories() {
+    const result = await db.query(`
+      SELECT c.name,
+             CAST(COUNT(t.id) AS INTEGER) AS total,
+             CAST(COALESCE(SUM(CAST(t.done AS INTEGER)), 0) AS INTEGER) AS done
+      FROM categories c LEFT JOIN tasks t ON t.category_id = c.id
+      GROUP BY c.id, c.name ORDER BY c.id`);
+    return result.rows.map((r) => ({ name: r.name, total: r.total, done: r.done }));
   },
 };

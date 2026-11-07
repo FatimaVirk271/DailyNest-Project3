@@ -6,15 +6,16 @@ DailyNest is a daily life planner (Home, Study, Health, Shopping tasks).
 - **Project 2** was the nervous system: a backend API.
 - **Project 3** is the memory: a real **database**, so tasks are stored permanently and safely.
 
-Built for the DecodeLabs Full Stack Development internship (Batch 2026) with **Node.js + Express + SQLite**.
+Built for the DecodeLabs Full Stack Development internship (Batch 2026) with **Node.js + Express + PostgreSQL**
+(a shared cloud database), with a **local SQLite file** as an offline fallback.
 
-Built by: Fatima
+Built by: _Your Name_
 
 ## What changed since Project 2
 
 | Project 2 | Project 3 |
 |-----------|-----------|
-| Tasks lived in memory and were copied to `data.json` | Tasks live in a **SQL database** (`data/dailynest.db`) with two tables |
+| Tasks lived in memory and were copied to `data.json` | Tasks live in a **SQL database** with two tables: shared cloud PostgreSQL (local app + live demo use the SAME data), or a local file when no cloud database is set |
 | The whole file was rewritten on every change | Only the changed row is touched (INSERT / UPDATE / DELETE) |
 | Filtering and paging were done in JavaScript | The database filters and pages (`WHERE`, `LIMIT`, `OFFSET`) |
 | Progress numbers were counted in JavaScript | The database counts them (`COUNT`, `SUM`, `GROUP BY`) |
@@ -25,34 +26,56 @@ The page (`public/`), the routes, the validators and the middleware are the same
 Only `store.js` was rewritten (and `db.js` + `schema.sql` were added). That is the point of keeping the
 persistence layer separate: you can change where data lives without touching the rest.
 
+## One database for the local app AND the live demo
+
+A SQLite file lives on one computer only, so your laptop and the hosted app would each have their own data.
+To share one database, both connect to the same **cloud PostgreSQL** database (free on Neon).
+The app chooses automatically:
+
+| `DATABASE_URL` is... | The app uses... |
+|----------------------|-----------------|
+| set | the shared cloud PostgreSQL database |
+| empty | the local file `data/dailynest.db` (only for your own computer) |
+
+### Set it up (once)
+1. Create a free database at **neon.com** (sign in with GitHub, create a project). Click **Connect** and copy the
+   connection string. It looks like `postgresql://user:password@ep-xxxx.neon.tech/neondb?sslmode=require`.
+2. **Local app:** copy `.env.example` to a new file named `.env` and paste your string after `DATABASE_URL=`.
+3. **Live app (SnapDeploy):** open the container settings, add an environment variable `DATABASE_URL` with the same string,
+   then redeploy.
+
+The connection string is a password: keep it only in `.env` and in the host's settings, never on GitHub.
+
 ## Run it
 
-Needs **Node.js 22.13 or newer** (check with `node -v`).
-
 ```bash
-npm install     # downloads Express
+npm install     # downloads Express and pg (the PostgreSQL driver)
 npm start       # open http://localhost:3000
-npm test        # runs the automated checks
+npm test        # runs the automated checks (they use a temporary file and NEVER touch your cloud database)
 ```
 
-Open **http://localhost:3000** (not the HTML file directly). The first start creates `data/dailynest.db`
-and adds the 4 starter tasks. Add a task, press Ctrl+C, start again: the task is still there.
+Open **http://localhost:3000** (not the HTML file directly). On start the terminal prints which database is used:
+`Database: PostgreSQL (cloud database)` or `Database: SQLite file ...`. The first start creates the tables and adds
+the 4 starter tasks. Add a task, press Ctrl+C, start again: the task is still there. With the cloud database the same
+task also appears on the live link.
 
-Using an older Node? Run `npm install better-sqlite3` - `db.js` uses it automatically when `node:sqlite` is missing.
+Without `DATABASE_URL` the local fallback needs **Node.js 22.13 or newer** (`node -v`). With the cloud database any Node 18+ works.
 (Node prints a one-line "SQLite is an experimental feature" warning on Node 22. That is normal.)
 
 **Bring your Project 2 tasks:** copy your old `data.json` into this folder and run `npm run migrate`.
-Careful: it *replaces* the tasks currently in the database with the ones from the file.
+It writes into the active database and *replaces* the tasks currently in it.
 
-To look inside the database, open `data/dailynest.db` with the free app **DB Browser for SQLite**.
+To look inside the cloud database use the **Tables / SQL Editor** pages in the Neon dashboard.
+To look inside the local file, open `data/dailynest.db` with **DB Browser for SQLite**.
 
 ## Project structure
 
 ```
 DailyNest-Project3/
 ├── server.js          # starts the app, connects all pieces
-├── db.js              # THE BRIDGE: connects Node.js to the database file        (new)
-├── schema.sql         # THE BLUEPRINT: tables, keys and rules                    (new)
+├── db.js              # THE BRIDGE: connects Node.js to the database (cloud or file) (new)
+├── schema.sql         # THE BLUEPRINT: tables, keys and rules (PostgreSQL)       (new)
+├── schema.sqlite.sql  # the same blueprint for the local SQLite file             (new)
 ├── store.js           # THE ACTIONS: CRUD written in SQL (rewritten from P2)
 ├── routes/
 │   ├── tasks.js       # GET / POST / PUT / PATCH / DELETE for tasks (tiny changes)
@@ -64,7 +87,8 @@ DailyNest-Project3/
 ├── scripts/
 │   └── migrate-json.js  # moves Project 2's data.json into the database           (new)
 ├── public/            # the DailyNest page (same as P2)
-├── data/              # dailynest.db is created here
+├── data/              # dailynest.db is created here (only when no cloud database is set)
+├── .env.example       # template for your DATABASE_URL (copy to .env)
 ├── test.js            # automated tests
 └── package.json
 ```
@@ -96,11 +120,11 @@ categories                         tasks
 | `DEFAULT` | done = 0, created_at = now | forgetting to send a value |
 | `FOREIGN KEY` | tasks.category_id | tasks of a category that does not exist |
 
-**Why SQL (SQLite) and not NoSQL?** Our data is connected (category -> tasks) and has a fixed shape, which is what
-relational databases are best at. SQLite is a single file, so there is nothing to install, and the same SQL works
-in PostgreSQL or MySQL later.
+**Why SQL (PostgreSQL) and not NoSQL?** Our data is connected (category -> tasks) and has a fixed shape, which is what
+relational databases are best at. PostgreSQL lives in the cloud, so the local app and the live demo can share it.
+SQLite (a single file) stays as the offline fallback; `store.js` is written once and works with both.
 
-**Why a native driver and not an ORM?** A native driver means we write the SQL ourselves, so you can see exactly what
+**Why a native driver and not an ORM?** A native driver (`pg` for PostgreSQL) means we write the SQL ourselves, so you can see exactly what
 happens. An ORM (Prisma, Sequelize) writes SQL for you: faster to build, but it hides the details.
 
 ## CRUD = HTTP = SQL (Pillar 3: The Action)
@@ -176,14 +200,14 @@ curl -X POST http://localhost:3000/api/tasks -H "Content-Type: application/json"
 1. **Validation in the API** (`validators.js`): friendly 400 errors before anything reaches the database.
 2. **Rules in the database** (`schema.sql`): `NOT NULL`, `UNIQUE`, `CHECK`, foreign key. Even if someone talks to the
    database directly or the code has a bug, bad data is refused.
-3. **Parameterized queries** (`store.js`): user values only ever travel through `?` placeholders.
+3. **Parameterized queries** (`store.js`): user values only ever travel through `$1, $2 ...` placeholders.
 
 ```js
 // DANGEROUS - never do this: the user's text becomes part of the SQL command
-db.prepare("SELECT * FROM tasks WHERE text = '" + userInput + "'");
+db.query("SELECT * FROM tasks WHERE text = '" + userInput + "'");
 
 // SAFE - this project: the SQL and the data travel separately, the input is only ever DATA
-db.prepare('SELECT * FROM tasks WHERE text = ?').get(userInput);
+db.query('SELECT * FROM tasks WHERE text = $1', [userInput]);
 ```
 
    `store.update` builds its `SET` list from fixed text written by us, never from the names the user sends.
@@ -196,7 +220,8 @@ db.prepare('SELECT * FROM tasks WHERE text = ?').get(userInput);
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `PORT` | 3000 | Port to listen on |
-| `DB_FILE` | ./data/dailynest.db | Where the database file lives |
+| `DATABASE_URL` | (empty) | Cloud PostgreSQL connection string. Empty = use the local SQLite file |
+| `DB_FILE` | ./data/dailynest.db | Where the local SQLite file lives (only when `DATABASE_URL` is empty) |
 | `API_KEY` | decodelabs-secret | Key needed for `/api/admin/reset` |
 | `RATE_LIMIT_MAX` | 200 | Requests per minute per IP |
 | `SILENT` | (off) | Set to `1` to hide request logs |
@@ -208,10 +233,11 @@ db.prepare('SELECT * FROM tasks WHERE text = ?').get(userInput);
 | Design a simple database schema | `schema.sql`: 2 tables, primary keys, a foreign key, a one-to-many relationship |
 | Perform basic CRUD operations | `store.js` + `routes/tasks.js`: INSERT, SELECT, UPDATE, DELETE through POST, GET, PUT/PATCH, DELETE |
 | Ensure proper data handling | validation + `NOT NULL / UNIQUE / CHECK / DEFAULT / FOREIGN KEY` + transactions + correct status codes |
-| Pillar 2: connect with the right tool | `db.js`: a native driver, with the choice explained above |
+| Pillar 2: connect with the right tool | `db.js`: native drivers (`pg` for PostgreSQL, built-in SQLite for the local file), choice explained above |
 | Pillar 3: CRUD mapped to RESTful HTTP | table above; identical API to Project 2 so the page keeps working |
 | Pillar 4: constraints and parameterization | the section above, proven by tests (SQL injection and direct-database checks) |
-| Data longevity | `npm test` restarts a real server and checks the data is still there |
+| Data longevity | data lives in a database, not in memory; `npm test` restarts a real server and checks the data is still there |
+| One shared database | `DATABASE_URL` points the local app and the live demo at the same cloud database |
 
 ## Explain it in simple words
 
@@ -233,10 +259,16 @@ defence: it cannot be bypassed by a bug in the code.
 
 **What is a transaction?** A group of steps that either all succeed or are all undone, so you never end up half-finished.
 
-**Why does `reset` also reset the ids?** It clears the table and the id counter (`sqlite_sequence`) so the starter tasks get ids 1 to 4 again.
+**Why does `reset` also reset the ids?** It clears the table and the id counter so the starter tasks get ids 1 to 4 again
+(`TRUNCATE ... RESTART IDENTITY` in PostgreSQL).
+
+**Why do the local app and the live demo show the same tasks now?** Both connect to the same cloud database through `DATABASE_URL`.
+A SQLite file would exist separately on each computer.
+
+**Why are the functions `async` / `await`?** Asking a cloud database takes time (the network). `await` waits for the answer
+without freezing the server.
 
 ## Ideas for next steps
 
 - Add user accounts and login so each person has their own tasks (a `users` table with `tasks.user_id` as a second foreign key)
 - Add due dates and reminders
-- Move from SQLite to PostgreSQL for a hosted app

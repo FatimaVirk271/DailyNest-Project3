@@ -7,6 +7,10 @@ function sendError(res, status, code, message, details) {
   return res.status(status).json({ success: false, error });
 }
 
+// Express 4 does not catch errors thrown inside async functions.
+// This wrapper sends them to errorHandler (clean 500) instead of crashing the request.
+const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
 // Prints: GET /api/tasks 200 3ms
 function requestLogger(req, res, next) {
   if (process.env.SILENT === '1') return next();
@@ -86,6 +90,7 @@ function errorHandler(err, req, res, next) {
 
 module.exports = {
   sendError,
+  asyncHandler,
   requestLogger,
   rateLimiter,
   requireApiKey,
